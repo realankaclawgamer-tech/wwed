@@ -98,7 +98,7 @@ $currentPage = $currentPage ?? '';
 $totalHits = 0;
 $totalVisits = 0;
 
-if (isset($userData['link_id'])) {
+if (empty($skipSidebarCounts) && isset($userData['link_id'])) {
     $__sid = (int)$userData['link_id'];
     $__thRaw = $isTriplehook ?? ($userData['triplehook'] ?? 0);
     $__thMode = ($__thRaw === true || $__thRaw === 1 || $__thRaw === '1' || (is_string($__thRaw) && in_array(strtolower(trim((string)$__thRaw)), ['1','true','yes','on'], true)) || !empty($isTriplehook));
