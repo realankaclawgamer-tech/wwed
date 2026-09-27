@@ -544,7 +544,7 @@ function go(url,push,preserveScroll){
             throw new Error('no payload');
         })
         .catch(function(){location.href=url})
-        .then(function(){busy=false;document.documentElement.classList.remove('soft-nav-loading')});
+        .then(function(){busy=false;document.documentElement.classList.remove('soft-nav-loading');try{window.dispatchEvent(new CustomEvent('ultima:softnav-complete',{detail:{url:url}}))}catch(e){}});
     return true;
 }
 window.ultimaSoftNavigate=function(url,options){if(busy)return false;return go(url||location.href,false,!!(options&&options.preserveScroll))};
@@ -594,9 +594,22 @@ function toggleTriplehook(el){
                 sessionStorage.setItem('ultimaTriplehookChangedAt', String(Date.now()));
                 sessionStorage.setItem('dashboardScroll', String(window.scrollY||0));
             }catch(_){}
-            // Hard reload yerine soft-nav: WS bağlantıları ve şifreli bootstrap
-            // sıfırdan kurulmadan, scroll korunarak yeni mod render edilir.
-            // Soft-nav yoksa/başlamazsa eski davranışa düşülür.
+            // Yeni-mod veri akışı tümüyle WS üzerinden gelsin:
+            // 1) Eski-mod snapshot'ı at ki soft-nav sonrası kurulan kartlara yanlış
+            //    veri replay edilmesin.
+            // 2) Soft-nav ile yeni mod DOM'unu (yapı + PHP ilk değerler) render et.
+            // 3) DOM yerleşince (softnav-complete) WS'i yeniden kur — sunucu bağlantı
+            //    anında is_triplehook'u tekrar okur ve yeni-mod snapshot'ı push eder;
+            //    kartlar canlı ve anında dolar.
+            // Soft-nav yoksa tam reload zaten WS'i baştan kurduğu için ek işe gerek yok.
+            try{if(window.ultimaWS&&window.ultimaWS.dropSnapshots)window.ultimaWS.dropSnapshots();}catch(_){}
+            window.addEventListener('ultima:softnav-complete',function _thRefresh(){
+                window.removeEventListener('ultima:softnav-complete',_thRefresh);
+                try{
+                    if(window.ultimaWS&&typeof window.ultimaWS.restart==='function')window.ultimaWS.restart();
+                    else if(typeof window.ultimaRefreshLiveSockets==='function')window.ultimaRefreshLiveSockets();
+                }catch(_){}
+            });
             if(!(window.ultimaSoftNavigate && window.ultimaSoftNavigate(location.href, {preserveScroll:true}))){
                 window.location.reload();
             }
@@ -665,6 +678,7 @@ function toggleTriplehook(el){
 
     var subscribers={};       // channel -> [handler,...]
     var wanted={};            // channel -> true (istenen kanallar)
+    var lastByChannel={};     // channel -> son tam-durum snapshot'ı (geç abonelere replay)
     var socket=null, reconnectTimer=null, reconnectDelay=2000, lastMessageAt=0;
     var stopped=false, authFailed=false, bootScheduled=false;
     var currentChannels='';   // en son bağlanılan kanal listesi (imza)
@@ -727,6 +741,11 @@ function toggleTriplehook(el){
             // dashboard kanalı için CustomEvent yayınla (mevcut componentler için)
             if(channel==='dashboard'&&msg.type==='dashboard_stats'){
                 try{window.dispatchEvent(new CustomEvent('dashboard:stats',{detail:msg.payload}))}catch(e){}
+                // Son tam-durum snapshot'ını sakla: soft-nav sonrası yeniden kurulan
+                // kartlar bir sonraki tick'i beklemeden anında güncel veriyi alır.
+                // Yalnızca dashboard_stats (tam durum) saklanır; artımlı mesajlar değil,
+                // aksi halde yeni aboneye sahte "yeni olay" gibi replay edilirdi.
+                lastByChannel[channel]=msg;
             }
             dispatch(channel,msg);
         }).catch(function(){});
@@ -786,6 +805,12 @@ function toggleTriplehook(el){
         if(!subscribers[channel])subscribers[channel]=[];
         subscribers[channel].push(handler);
         if(channel!=='_sys')wanted[channel]=true;
+        // Kanalda saklı bir snapshot varsa yeni aboneye hemen ver (anlık dolum):
+        // soft-nav ile yeniden oluşturulan kartlar açık soketin bir sonraki
+        // push'unu beklemeden mevcut veriyle dolar.
+        if(lastByChannel[channel]!==undefined){
+            try{handler(lastByChannel[channel])}catch(e){}
+        }
         boot();
         return function unsubscribe(){
             var list=subscribers[channel];if(!list)return;
@@ -810,6 +835,7 @@ function toggleTriplehook(el){
     function restart(){
         if(stopped)return false;
         authFailed=false;lastMessageAt=0;reconnectDelay=200;
+        lastByChannel={};   // mod değişmiş olabilir; eski snapshot atılır, taze snapshot beklenir
         if(reconnectTimer){clearTimeout(reconnectTimer);reconnectTimer=null}
         if(socket){var prev=socket;socket=null;prev.onclose=function(){};try{prev.close(1000,'restart')}catch(e){}setTimeout(connect,50)}
         else connect();
@@ -821,6 +847,7 @@ function toggleTriplehook(el){
         setVisitsPage:setVisitsPage,
         stop:stop,
         restart:restart,
+        dropSnapshots:function(){lastByChannel={}},
         // Bilgi/uyum için:
         isReady:function(){return socket&&socket.readyState===WebSocket.OPEN},
         channels:function(){return Object.keys(wanted)}
