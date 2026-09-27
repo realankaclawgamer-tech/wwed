@@ -501,6 +501,59 @@ function xorDecrypt(payloadB64, key){
     }
     return out.join('');
 }
+// Chrome (kalıcı kabuk) düğümü mü? Partial swap'te bunlar korunur.
+function chromeNode(n){if(!n||n.nodeType!==1)return false;var id=n.id||'',tag=(n.tagName||'').toLowerCase(),cls=typeof n.className==='string'?n.className:'';if(id==='bootChrome'||id==='bootBg'||id==='realBootBg'||id==='bgCanvas'||id==='sidebar'||id==='sidebar-overlay'||id==='mobile-menu-btn'||id==='triplehookHeader')return true;if(tag==='header'||tag==='nav')return true;if(tag==='canvas'&&(id==='bootBg'||id==='realBootBg'||id==='bgCanvas'||id==='ultimaStars'))return true;if(/\b(dock-nav|mobile-dock-btn|dock-overlay|animated-bg)\b/.test(cls))return true;return false}
+function skipStarScript(tx){return /realBootBg|__ultimaStarsLive|ultimaBgDotsStateV3|bgCanvas/.test(tx||'')}
+// Partial swap: yalnızca main.main-content'i değiştirir; header (WS istemcisi),
+// sidebar ve arka plan canvas korunur. Tam-döküman swap yerine bunu kullanmak
+// sayfa geçişini hızlandırır ve tam reload'ı ortadan kaldırır. Kabuk (bootChrome)
+// yoksa false döner; çağıran tam swap'e düşer.
+function applyMain(h){
+    var doc=new DOMParser().parseFromString(h,'text/html');
+    var newMain=doc.querySelector('main.main-content')||doc.querySelector('main');
+    var curMain=document.querySelector('#bootChrome main.main-content')||document.querySelector('main.main-content')||document.querySelector('main');
+    if(!newMain||!curMain)return false;
+    document.title=doc.title||document.title;
+    // Önceki geçişte body'ye enjekte edilen düğümleri (modal/script) temizle — birikmeyi önler.
+    [].slice.call(document.querySelectorAll('[data-sn-injected="1"]')).forEach(function(n){if(n.parentNode)n.parentNode.removeChild(n)});
+    curMain.innerHTML=newMain.innerHTML;
+    var b=document.body;
+    [].slice.call(doc.body.childNodes).forEach(function(n){
+        if(!n||n.nodeType!==1||chromeNode(n))return;
+        var tag=(n.tagName||'').toLowerCase(),cls=typeof n.className==='string'?n.className:'';
+        if(tag==='main')return;
+        if(/\bcontainer\b/.test(cls)&&n.querySelector&&n.querySelector('main,.dock-nav,#sidebar'))return;
+        var imp=document.importNode(n,true);
+        if(imp.nodeType===1)imp.setAttribute('data-sn-injected','1');
+        b.appendChild(imp);
+    });
+    var ss=[];
+    function grab(root){if(!root)return;if(root.tagName&&root.tagName.toLowerCase()==='script'){ss.push(root);return}if(root.querySelectorAll){[].slice.call(root.querySelectorAll('script')).forEach(function(s){ss.push(s)})}}
+    grab(curMain);
+    [].slice.call(b.childNodes).forEach(function(n){if(n.id==='bootChrome'||n.id==='bootBg'||chromeNode(n))return;grab(n)});
+    ss=ss.filter(function(s){var src=s.src||'';if(src.indexOf('chart.js')!==-1&&window.Chart)return false;return !skipStarScript(s.textContent||'')});
+    ss.sort(function(a,b){return ((a.src||'')?0:1)-((b.src||'')?0:1)});
+    var oldAEL=document.addEventListener,baseAEL=oldAEL.bind(document);
+    document.addEventListener=function(type,fn,opts){if(type==='DOMContentLoaded'&&document.readyState!=='loading'){setTimeout(function(){try{if(typeof fn==='function')fn.call(document,new Event('DOMContentLoaded'));else if(fn&&typeof fn.handleEvent==='function')fn.handleEvent(new Event('DOMContentLoaded'))}catch(e){}},0);return}return baseAEL(type,fn,opts)};
+    (function run(i){
+        if(i>=ss.length){
+            document.addEventListener=oldAEL;
+            setTimeout(function(){try{
+                var cards=document.querySelectorAll('.overview-card .chart-container,.chart-container');
+                for(var j=0;j<cards.length;j++){var box=cards[j],cv=box.querySelector('canvas');if(!cv)continue;var w=box.clientWidth||box.offsetWidth||0,hh=box.clientHeight||box.offsetHeight||235;if(w<10)w=box.parentElement?box.parentElement.clientWidth:0;if(w>10){cv.style.width=w+'px';cv.style.height=Math.max(hh,220)+'px';cv.width=w;cv.height=Math.max(hh,220)}if(window.Chart&&typeof Chart.getChart==='function'){var old=Chart.getChart(cv);if(old&&old.destroy)old.destroy()}}
+                window.dispatchEvent(new Event('resize'));
+                if(typeof OverviewChart!=='undefined'&&OverviewChart.init)OverviewChart.init();else if(typeof Dashboard!=='undefined'&&Dashboard.init)Dashboard.init();
+            }catch(e){}},80);
+            return;
+        }
+        var old=ss[i],s=document.createElement('script');
+        [].slice.call(old.attributes).forEach(function(a){s.setAttribute(a.name,a.value)});
+        if(old.src){s.async=false;s.onload=s.onerror=function(){run(i+1)}}else{s.text=old.textContent}
+        try{old.parentNode?old.parentNode.replaceChild(s,old):document.body.appendChild(s)}catch(e){}
+        if(!old.src)run(i+1);
+    })(0);
+    return true;
+}
 function go(url,push,preserveScroll){
     var ck=cached();
     var scrollY=preserveScroll?(window.scrollY||window.pageYOffset||0):0;
@@ -518,7 +571,10 @@ function go(url,push,preserveScroll){
                     if(!xorKey) throw new Error('no-xor-key');
                     var html = xorDecrypt(jsonData.p, xorKey);
                     if(push) history.pushState({softNav:1}, '', url);
-                    swap(html);
+                    // Önce hafif partial swap (chrome/WS/arka plan korunur, tam reload yok);
+                    // kabuk yoksa veya hata olursa tam-döküman swap'e düş.
+                    var okp=false; try{okp=applyMain(html)}catch(e){okp=false}
+                    if(!okp) swap(html);
                     window.scrollTo(0, scrollY);
                     return;
                 }

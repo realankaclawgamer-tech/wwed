@@ -326,6 +326,19 @@ if (isset($userData['link_id'])) {
         isNavigating = false;
     });
 
+    // Partial swap sonrası: bu script yeniden çalışmadığı için nav kapısını burada
+    // sıfırla ve aktif dock-item'i güncel path'e göre işaretle (chrome korunuyor).
+    window.addEventListener('ultima:softnav-complete', function() {
+        clearTimeout(navigationTimer);
+        isNavigating = false;
+        var path = location.pathname;
+        document.querySelectorAll('.dock-item').forEach(function(it) {
+            resetProgress(it);
+            var href = it.getAttribute('data-href');
+            if (href) it.classList.toggle('active', href === path);
+        });
+    });
+
     window.addEventListener('pagehide', function() { clearTimeout(navigationTimer); });
     window.addEventListener('pageshow', function() {
         clearTimeout(navigationTimer);
