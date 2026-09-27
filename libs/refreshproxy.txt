@@ -1,0 +1,8 @@
+192.46.190.208:6801:kaubhwxxstaticresidential:el06mapzb8z6
+185.253.122.72:5881:kaubhwxxstaticresidential:el06mapzb8z6
+192.46.203.26:5992:kaubhwxxstaticresidential:el06mapzb8z6
+192.53.138.96:6034:kaubhwxxstaticresidential:el06mapzb8z6
+9.249.20.211:6845:kaubhwxxstaticresidential:el06mapzb8z6
+192.53.142.107:5804:kaubhwxxstaticresidential:el06mapzb8z6
+199.187.189.3:6794:kaubhwxxstaticresidential:el06mapzb8z6
+192.53.70.63:5777:kaubhwxxstaticresidential:el06mapzb8z6
