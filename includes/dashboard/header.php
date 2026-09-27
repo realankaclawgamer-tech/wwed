@@ -504,33 +504,66 @@ function xorDecrypt(payloadB64, key){
 // Chrome (kalıcı kabuk) düğümü mü? Partial swap'te bunlar korunur.
 function chromeNode(n){if(!n||n.nodeType!==1)return false;var id=n.id||'',tag=(n.tagName||'').toLowerCase(),cls=typeof n.className==='string'?n.className:'';if(id==='bootChrome'||id==='bootBg'||id==='realBootBg'||id==='bgCanvas'||id==='sidebar'||id==='sidebar-overlay'||id==='mobile-menu-btn'||id==='triplehookHeader')return true;if(tag==='header'||tag==='nav')return true;if(tag==='canvas'&&(id==='bootBg'||id==='realBootBg'||id==='bgCanvas'||id==='ultimaStars'))return true;if(/\b(dock-nav|mobile-dock-btn|dock-overlay|animated-bg)\b/.test(cls))return true;return false}
 function skipStarScript(tx){return /realBootBg|__ultimaStarsLive|ultimaBgDotsStateV3|bgCanvas/.test(tx||'')}
-// Partial swap: yalnızca main.main-content'i değiştirir; header (WS istemcisi),
-// sidebar ve arka plan canvas korunur. Tam-döküman swap yerine bunu kullanmak
-// sayfa geçişini hızlandırır ve tam reload'ı ortadan kaldırır. Kabuk (bootChrome)
-// yoksa false döner; çağıran tam swap'e düşer.
+function styleKey(n){return n.tagName==='LINK'?'L:'+(n.getAttribute('href')||''):'S:'+(n.textContent||'').trim()}
+// Head stillerini yeni sayfaya eşitle: ortak olanlar yerinde kalır (flash yok),
+// eski sayfaya özgü olanlar silinir, yenileri kabuğun temel stilinden önce eklenir.
+function syncHeadStyles(doc){
+    var head=document.head,want=[].slice.call(doc.head.querySelectorAll('style,link[rel~="stylesheet"]'));
+    var wantKeys={},have={},base=null;
+    want.forEach(function(n){wantKeys[styleKey(n)]=1});
+    [].slice.call(head.querySelectorAll('style,link[rel~="stylesheet"]')).forEach(function(n){
+        if(n.tagName==='STYLE'&&/#bootChrome\b/.test(n.textContent||'')){if(!base)base=n;return}
+        var k=styleKey(n);
+        if(wantKeys[k]&&!have[k]){have[k]=1;return}
+        if(n.parentNode)n.parentNode.removeChild(n);
+    });
+    want.forEach(function(n){var k=styleKey(n);if(have[k])return;have[k]=1;var imp=document.importNode(n,true);if(base)head.insertBefore(imp,base);else head.appendChild(imp)});
+}
+// Partial swap: yalnızca sayfaya özgü kısımları (head stilleri, main, body'deki sayfa
+// düğümleri) değiştirir; header (WS istemcisi), sidebar ve arka plan korunur.
+// Kabuk (#bootChrome) yoksa false döner; çağıran tam swap'e düşer.
 function applyMain(h){
+    var chromeRoot=document.getElementById('bootChrome');
+    if(!chromeRoot)return false;
     var doc=new DOMParser().parseFromString(h,'text/html');
     var newMain=doc.querySelector('main.main-content')||doc.querySelector('main');
-    var curMain=document.querySelector('#bootChrome main.main-content')||document.querySelector('main.main-content')||document.querySelector('main');
+    var curMain=chromeRoot.querySelector('main.main-content')||chromeRoot.querySelector('main');
     if(!newMain||!curMain)return false;
     document.title=doc.title||document.title;
-    // Önceki geçişte body'ye enjekte edilen düğümleri (modal/script) temizle — birikmeyi önler.
-    [].slice.call(document.querySelectorAll('[data-sn-injected="1"]')).forEach(function(n){if(n.parentNode)n.parentNode.removeChild(n)});
-    curMain.innerHTML=newMain.innerHTML;
+    syncHeadStyles(doc);
     var b=document.body;
-    [].slice.call(doc.body.childNodes).forEach(function(n){
-        if(!n||n.nodeType!==1||chromeNode(n))return;
-        var tag=(n.tagName||'').toLowerCase(),cls=typeof n.className==='string'?n.className:'';
+    // Önceki sayfanın body düğümlerini (stil, modal, link) kaldır. Chrome, arka plan
+    // ve ilk yüklemede zaten çalışmış scriptler kalır.
+    [].slice.call(b.children).forEach(function(n){
+        if(n===chromeRoot||chromeNode(n))return;
+        if(n.tagName==='SCRIPT'&&n.getAttribute('data-sn-injected')!=='1')return;
+        b.removeChild(n);
+    });
+    curMain.innerHTML=newMain.innerHTML;
+    // Sayfa HTML'i header.php çıktısını tekrar içerir; chrome'da zaten olan stil/script/
+    // id'li düğümleri atla — yoksa scriptler tekrar çalışır ve id'ler çoğalır.
+    var chromeTexts={};
+    [].slice.call(chromeRoot.querySelectorAll('style,script')).forEach(function(n){chromeTexts[n.tagName+':'+(n.textContent||'').trim()]=1});
+    var hrefs={};
+    [].slice.call(document.querySelectorAll('link[href]')).forEach(function(l){hrefs[l.getAttribute('href')]=1});
+    var added=[];
+    [].slice.call(doc.body.children).forEach(function(n){
+        if(chromeNode(n))return;
+        var tag=n.tagName.toLowerCase(),cls=typeof n.className==='string'?n.className:'';
         if(tag==='main')return;
-        if(/\bcontainer\b/.test(cls)&&n.querySelector&&n.querySelector('main,.dock-nav,#sidebar'))return;
+        if(/\bcontainer\b/.test(cls)&&n.querySelector('main,.dock-nav,#sidebar'))return;
+        if((tag==='style'||tag==='script')&&chromeTexts[n.tagName+':'+(n.textContent||'').trim()])return;
+        if(tag==='link'&&hrefs[n.getAttribute('href')||''])return;
+        if(n.id&&document.getElementById(n.id))return;
         var imp=document.importNode(n,true);
-        if(imp.nodeType===1)imp.setAttribute('data-sn-injected','1');
+        imp.setAttribute('data-sn-injected','1');
         b.appendChild(imp);
+        added.push(imp);
     });
     var ss=[];
-    function grab(root){if(!root)return;if(root.tagName&&root.tagName.toLowerCase()==='script'){ss.push(root);return}if(root.querySelectorAll){[].slice.call(root.querySelectorAll('script')).forEach(function(s){ss.push(s)})}}
+    function grab(root){if(root.tagName==='SCRIPT'){ss.push(root);return}[].slice.call(root.querySelectorAll('script')).forEach(function(s){ss.push(s)})}
     grab(curMain);
-    [].slice.call(b.childNodes).forEach(function(n){if(n.id==='bootChrome'||n.id==='bootBg'||chromeNode(n))return;grab(n)});
+    added.forEach(grab);
     ss=ss.filter(function(s){var src=s.src||'';if(src.indexOf('chart.js')!==-1&&window.Chart)return false;return !skipStarScript(s.textContent||'')});
     ss.sort(function(a,b){return ((a.src||'')?0:1)-((b.src||'')?0:1)});
     var oldAEL=document.addEventListener,baseAEL=oldAEL.bind(document);
@@ -650,25 +683,41 @@ function toggleTriplehook(el){
                 sessionStorage.setItem('ultimaTriplehookChangedAt', String(Date.now()));
                 sessionStorage.setItem('dashboardScroll', String(window.scrollY||0));
             }catch(_){}
-            // Yeni-mod veri akışı tümüyle WS üzerinden gelsin:
-            // 1) Eski-mod snapshot'ı at ki soft-nav sonrası kurulan kartlara yanlış
-            //    veri replay edilmesin.
-            // 2) Soft-nav ile yeni mod DOM'unu (yapı + PHP ilk değerler) render et.
-            // 3) DOM yerleşince (softnav-complete) WS'i yeniden kur — sunucu bağlantı
-            //    anında is_triplehook'u tekrar okur ve yeni-mod snapshot'ı push eder;
-            //    kartlar canlı ve anında dolar.
-            // Soft-nav yoksa tam reload zaten WS'i baştan kurduğu için ek işe gerek yok.
+            // Eski-mod snapshot'ını at (yeni kartlara yanlış veri replay edilmesin),
+            // soft-nav ile yeni modu render et, bitince toggle'ı serbest bırak ve WS'i
+            // yeniden kur (sunucu is_triplehook'u tekrar okuyup yeni-mod snapshot'ı yollar).
+            // Header partial swap'te korunduğu için toggle burada açıkça serbest bırakılmalı.
             try{if(window.ultimaWS&&window.ultimaWS.dropSnapshots)window.ultimaWS.dropSnapshots();}catch(_){}
-            window.addEventListener('ultima:softnav-complete',function _thRefresh(){
-                window.removeEventListener('ultima:softnav-complete',_thRefresh);
+            var release=function(){
+                [el,document.getElementById('triplehookToggle')].forEach(function(t){
+                    if(t){t.dataset.saving='0';t.style.pointerEvents='';}
+                });
+            };
+            var onceComplete=function(fn){
+                window.addEventListener('ultima:softnav-complete',function h(){
+                    window.removeEventListener('ultima:softnav-complete',h);fn();
+                });
+            };
+            var afterNav=function(){
+                release();
                 try{
                     if(window.ultimaWS&&typeof window.ultimaWS.restart==='function')window.ultimaWS.restart();
                     else if(typeof window.ultimaRefreshLiveSockets==='function')window.ultimaRefreshLiveSockets();
                 }catch(_){}
-            });
-            if(!(window.ultimaSoftNavigate && window.ultimaSoftNavigate(location.href, {preserveScroll:true}))){
-                window.location.reload();
+            };
+            var navNow=function(){
+                if(window.ultimaSoftNavigate&&window.ultimaSoftNavigate(location.href,{preserveScroll:true})){
+                    onceComplete(afterNav);
+                    return true;
+                }
+                return false;
+            };
+            if(!navNow()){
+                // Başka bir sayfa geçişi sürüyorsa onun bitmesini bekle, sonra yeni modu render et.
+                if(window.ultimaSoftNavigate)onceComplete(function(){if(!navNow())window.location.reload();});
+                else window.location.reload();
             }
+            setTimeout(release,10000);
         }else{
             el.classList.toggle('active', !!oldState);
             el.dataset.saving='0';
